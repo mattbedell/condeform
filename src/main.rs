@@ -16,20 +16,20 @@ const APP_NAME: &str = env!("CARGO_PKG_NAME");
 mod cli;
 
 #[derive(Deserialize, Serialize)]
-struct Config<'a> {
-    environment: &'a str,
-    region: &'a str,
-    module: &'a str,
-    infra_dir: &'a str,
+struct Config {
+    environment: String,
+    region: String,
+    module: String,
+    infra_dir: String,
 }
 
-impl Default for Config<'static> {
+impl Default for Config {
     fn default() -> Self {
         Config {
-            environment: "gp-nonprod",
-            region: "us-east-1",
-            module: "vpc",
-            infra_dir: "../../",
+            environment: "gp-nonprod".to_string(),
+            region: "us-east-1".to_string(),
+            module: "vpc".to_string(),
+            infra_dir: "../../".to_string(),
         }
     }
 }
@@ -50,14 +50,13 @@ fn main() {
     let previous_state = fs::read_to_string(&state_path);
     let cur_dir = current_dir().unwrap();
     let state = match previous_state {
-        Ok(ref str) => toml::from_str(str).unwrap(),
+        Ok(str) => toml::from_str(&str).unwrap(),
         Err(_) => {
             let default_state = Config {
-                module: cur_dir.file_name().unwrap().to_str().unwrap(),
+                module: cur_dir.file_name().unwrap().to_str().unwrap().to_string(),
                 ..Config::default()
             };
-            fs::write(&state_path, toml::to_string(&default_state).unwrap())
-                .expect("Could not write state file");
+            write_state(&state_path, &default_state);
             default_state
         }
     };
@@ -66,48 +65,18 @@ fn main() {
 
     use cli::Commands::*;
     match &cli.command {
-        Init => {
-            let theme = ColorfulTheme::default();
-            let mut regions = REGIONS.to_vec();
-            let mut uniq = HashSet::new();
-            regions.sort_unstable();
-            regions.insert(0, state.region);
-            regions.retain(|v| uniq.insert(*v));
-
-            let environment = Input::<String>::with_theme(&theme)
-                .with_prompt("Environment")
-                .default(state.environment.to_string())
-                .interact_text()
-                .expect("Cannot process input");
-            let region = region_input(regions, &theme);
-            let module = Input::<String>::with_theme(&theme)
-                .with_prompt("Module")
-                .with_initial_text(current_dir().map_or(state.module.to_string(), |v| {
-                    v.file_name().unwrap().to_str().unwrap().to_string()
-                }))
-                .default(state.module.to_string())
-                .interact_text()
-                .expect("Cannot process input");
-
-            let infra_dir = Input::<String>::with_theme(&theme)
-                .with_prompt("Infra Dir")
-                .default(state.infra_dir.to_string())
-                .interact_text()
-                .expect("Cannot process input");
-
-            let infra_path = cur_dir.join(infra_dir).canonicalize().unwrap();
-
-            let new_state = Config {
-                environment: &environment,
-                region: &region,
-                module: &module,
-                infra_dir: infra_path.to_str().unwrap(),
+        Init { interactive } => {
+            let config = {
+                if let Some(true) = interactive {
+                    let state = get_config_with_input(&state, &cur_dir);
+                    write_state(&state_path, &state);
+                    state
+                } else {
+                    state
+                }
             };
 
-            fs::write(state_path, toml::to_string(&new_state).unwrap())
-                .expect("Could not write state file");
-
-            let module_path = get_module_var_dir(&new_state, "backend");
+            let module_path = get_module_var_dir(&config, "backend");
 
             Command::new("terraform")
                 .args(vec![
@@ -120,6 +89,10 @@ fn main() {
                 ])
                 .status()
                 .expect("failed to start terraform");
+        }
+        Edit => {
+            let new_state = get_config_with_input(&state, &cur_dir);
+            write_state(&state_path, &new_state);
         }
         Plan => {
             let module_path = get_module_var_dir(&state, "terraform");
@@ -140,11 +113,7 @@ fn main() {
         }
         Destroy => {
             let module_path = get_module_var_dir(&state, "terraform");
-            let args = vec![
-                "destroy",
-                "-var-file",
-                module_path.to_str().unwrap(),
-            ];
+            let args = vec!["destroy", "-var-file", module_path.to_str().unwrap()];
 
             println!("terraform {}", &args.join(" "));
 
@@ -205,12 +174,56 @@ fn get_repo_state_filepath(state_dir: &PathBuf) -> PathBuf {
 
 fn get_module_var_dir(config: &Config, basename: &str) -> PathBuf {
     let mut module_path = PathBuf::new();
-    module_path.push(config.infra_dir);
-    module_path.push(config.environment);
-    module_path.push(config.region);
-    module_path.push(config.module);
+    module_path.push(&config.infra_dir);
+    module_path.push(&config.environment);
+    module_path.push(&config.region);
+    module_path.push(&config.module);
 
     module_path.push(basename);
     module_path.set_extension("tfvars");
     module_path
+}
+
+fn get_config_with_input(state: &Config, cwd: &PathBuf) -> Config {
+    let theme = ColorfulTheme::default();
+    let mut regions = REGIONS.to_vec();
+    let mut uniq = HashSet::new();
+    regions.sort_unstable();
+    regions.insert(0, &state.region);
+    regions.retain(|v| uniq.insert(*v));
+
+    let environment = Input::<String>::with_theme(&theme)
+        .with_prompt("Environment")
+        .default(state.environment.to_string())
+        .interact_text()
+        .expect("Cannot process input");
+    let region = region_input(regions, &theme);
+    let module = Input::<String>::with_theme(&theme)
+        .with_prompt("Module")
+        .with_initial_text(current_dir().map_or(state.module.to_string(), |v| {
+            v.file_name().unwrap().to_str().unwrap().to_string()
+        }))
+        .default(state.module.to_string())
+        .interact_text()
+        .expect("Cannot process input");
+
+    let infra_dir = Input::<String>::with_theme(&theme)
+        .with_prompt("Infra Dir")
+        .default(state.infra_dir.to_string())
+        .interact_text()
+        .expect("Cannot process input");
+
+    let infra_path = cwd.join(infra_dir).canonicalize().unwrap();
+
+    Config {
+        environment,
+        region,
+        module,
+        infra_dir: infra_path.to_str().unwrap().to_string(),
+    }
+}
+
+fn write_state(state_path: &PathBuf, config: &Config) -> () {
+    fs::write(state_path, toml::to_string(config).unwrap())
+        .expect("Could not write state file");
 }
