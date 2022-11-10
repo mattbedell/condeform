@@ -78,15 +78,19 @@ fn main() {
 
             let module_path = get_module_var_dir(&config, "backend");
 
+            let args = vec![
+                "init",
+                "-get=true",
+                "-force-copy",
+                "-backend-config",
+                module_path.to_str().unwrap(),
+                "-reconfigure",
+            ];
+
+            println!("terraform {}", args.join(" "));
+
             Command::new("terraform")
-                .args(vec![
-                    "init",
-                    "-get=true",
-                    "-force-copy",
-                    "-backend-config",
-                    module_path.to_str().unwrap(),
-                    "-reconfigure",
-                ])
+                .args(args)
                 .status()
                 .expect("failed to start terraform");
         }
@@ -104,10 +108,10 @@ fn main() {
                 "-lock-timeout=30s",
             ];
 
-            println!("terraform {}", &args.join(" "));
+            println!("terraform {}", args.join(" "));
 
             Command::new("terraform")
-                .args(&args)
+                .args(args)
                 .status()
                 .expect("failed to start terraform");
         }
@@ -115,10 +119,10 @@ fn main() {
             let module_path = get_module_var_dir(&state, "terraform");
             let args = vec!["destroy", "-var-file", module_path.to_str().unwrap()];
 
-            println!("terraform {}", &args.join(" "));
+            println!("terraform {}", args.join(" "));
 
             Command::new("terraform")
-                .args(&args)
+                .args(args)
                 .status()
                 .expect("failed to start terraform");
         }
@@ -224,6 +228,5 @@ fn get_config_with_input(state: &Config, cwd: &PathBuf) -> Config {
 }
 
 fn write_state(state_path: &PathBuf, config: &Config) -> () {
-    fs::write(state_path, toml::to_string(config).unwrap())
-        .expect("Could not write state file");
+    fs::write(state_path, toml::to_string(config).unwrap()).expect("Could not write state file");
 }
