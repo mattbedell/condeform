@@ -7,7 +7,10 @@ This wrapper remembers the previously used values of the path segments and allow
 
 Previously used values are cached on a per-repo basis.
 
-https://user-images.githubusercontent.com/21014998/201228517-d621f290-5843-4dd5-897d-71ae755273be.mp4
+
+
+https://user-images.githubusercontent.com/21014998/201233501-328145f4-d960-4f74-98fd-ff3719330d56.mp4
+
 
 
 ### Usage
