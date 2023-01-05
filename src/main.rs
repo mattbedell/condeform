@@ -1,3 +1,4 @@
+use anyhow;
 use std::collections::HashSet;
 use std::env::current_dir;
 use std::fs;
@@ -9,15 +10,17 @@ use dialoguer::{theme::ColorfulTheme, Input, Select};
 use etcetera::app_strategy::{AppStrategy, AppStrategyArgs, Xdg};
 use serde::{Deserialize, Serialize};
 
-const REGIONS: [&'static str; 3] = ["us-east-1", "eu-central-1", "ap-northeast-1"];
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
 mod cli;
+mod error;
+
+use error::ModuleError;
 
 #[derive(Deserialize, Serialize)]
 struct Config {
-    environment: String,
+    environment: Option<String>,
     region: String,
     module: String,
     infra_dir: String,
@@ -26,7 +29,7 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            environment: "gp-nonprod".to_string(),
+            environment: None,
             region: "us-east-1".to_string(),
             module: "vpc".to_string(),
             infra_dir: "../../".to_string(),
@@ -34,7 +37,7 @@ impl Default for Config {
     }
 }
 
-fn main() {
+fn main() -> Result<(), anyhow::Error> {
     let strategy = Xdg::new(AppStrategyArgs {
         top_level_domain: "org".to_string(),
         author: AUTHORS.to_string(),
@@ -56,7 +59,7 @@ fn main() {
                 module: cur_dir.file_name().unwrap().to_str().unwrap().to_string(),
                 ..Config::default()
             };
-            write_state(&state_path, &default_state);
+            write_state(&state_path, &default_state)?;
             default_state
         }
     };
@@ -68,15 +71,15 @@ fn main() {
         Init { interactive } => {
             let config = {
                 if let Some(true) = interactive {
-                    let state = get_config_with_input(&state, &cur_dir);
-                    write_state(&state_path, &state);
+                    let state = get_config_with_input(&state, &cur_dir)?;
+                    write_state(&state_path, &state)?;
                     state
                 } else {
                     state
                 }
             };
 
-            let module_path = get_module_var_dir(&config, "backend");
+            let module_path = get_module_var_dir(&config, "backend")?;
 
             let args = vec![
                 "init",
@@ -89,17 +92,14 @@ fn main() {
 
             println!("terraform {}", args.join(" "));
 
-            Command::new("terraform")
-                .args(args)
-                .status()
-                .expect("failed to start terraform");
+            Command::new("terraform").args(args).status()?;
         }
         Edit => {
-            let new_state = get_config_with_input(&state, &cur_dir);
-            write_state(&state_path, &new_state);
+            let new_state = get_config_with_input(&state, &cur_dir)?;
+            write_state(&state_path, &new_state)?;
         }
         Plan => {
-            let module_path = get_module_var_dir(&state, "terraform");
+            let module_path = get_module_var_dir(&state, "terraform")?;
             let args = vec![
                 "plan",
                 "-var-file",
@@ -110,37 +110,96 @@ fn main() {
 
             println!("terraform {}", args.join(" "));
 
-            Command::new("terraform")
-                .args(args)
-                .status()
-                .expect("failed to start terraform");
+            Command::new("terraform").args(args).status()?;
         }
         Destroy => {
-            let module_path = get_module_var_dir(&state, "terraform");
+            let module_path = get_module_var_dir(&state, "terraform")?;
             let args = vec!["destroy", "-var-file", module_path.to_str().unwrap()];
 
             println!("terraform {}", args.join(" "));
 
-            Command::new("terraform")
-                .args(args)
-                .status()
-                .expect("failed to start terraform");
+            Command::new("terraform").args(args).status()?;
         }
+    };
+    Ok(())
+}
+
+fn env_input(
+    infra_dir: &String,
+    config: &Config,
+    theme: &ColorfulTheme,
+) -> anyhow::Result<String> {
+    let infra_path = Path::new(infra_dir).to_path_buf();
+
+    let mut uniq = HashSet::new();
+
+    let mut items: Vec<String> = get_dirnames_from_path(&infra_path)
+        .filter(|v| v != "terraform")
+        .collect();
+
+    items.sort_unstable();
+
+    if let Some(env) = &config.environment {
+        items.insert(0, env.to_owned());
+    }
+
+    items.retain(|v| uniq.insert(v.to_owned()));
+
+    let env_index = Select::with_theme(theme)
+        .with_prompt("Environment")
+        .items(&items)
+        .default(0)
+        .interact_opt()
+        .expect("Cannot process input");
+
+    if let Some(idx) = env_index {
+        Ok(items[idx].to_owned())
+    } else {
+        Err(ModuleError::IncompleteConfig("environment".to_string()).into())
     }
 }
 
-fn region_input(regions: Vec<&str>, theme: &ColorfulTheme) -> String {
+fn get_dirnames_from_path(path: &PathBuf) -> impl Iterator<Item=String> {
+    path.read_dir()
+        .unwrap()
+        .filter_map(|v| v.ok())
+        .map(|v| v.path())
+        .filter(|v| v.is_dir())
+        .filter_map(|v| {
+            if let Some(filename) = v.file_name() {
+                filename.to_str().and_then(|c| Some(c.to_string()))
+            } else {
+                None
+            }
+        })
+}
+
+fn region_input(config: &Config, infra_path: &PathBuf, env: &String, theme: &ColorfulTheme) -> String {
+
+    let mut env_path = PathBuf::new();
+    env_path = env_path.join(infra_path);
+    env_path.push(env);
+
+    let mut items: Vec<String> = get_dirnames_from_path(&env_path)
+        .collect();
+
+
+    let mut uniq = HashSet::new();
+    items.sort_unstable();
+
+    items.insert(0, config.region.to_owned());
+    items.retain(|v| uniq.insert(v.to_owned()));
     let region_index = Select::with_theme(theme)
         .with_prompt("Select region or <ESC> for text input")
-        .items(&regions)
+        .items(&items)
         .default(0)
         .interact_opt()
         .expect("Exited");
 
     match region_index {
-        Some(idx) => regions[idx].to_owned(),
+        Some(idx) => items[idx].to_owned(),
         None => {
-            let default_region = regions[0].to_owned();
+            let default_region = items[0].to_owned();
             Input::<String>::with_theme(theme)
                 .with_prompt("Region")
                 .default(default_region)
@@ -176,32 +235,40 @@ fn get_repo_state_filepath(state_dir: &PathBuf) -> PathBuf {
     state_filepath
 }
 
-fn get_module_var_dir(config: &Config, basename: &str) -> PathBuf {
+fn get_module_var_dir(config: &Config, basename: &str) -> Result<PathBuf, ModuleError> {
     let mut module_path = PathBuf::new();
     module_path.push(&config.infra_dir);
-    module_path.push(&config.environment);
+    if let Some(env) = &config.environment {
+        module_path.push(env);
+    }
     module_path.push(&config.region);
     module_path.push(&config.module);
 
+    if let false = module_path.is_dir() {
+        return Err(ModuleError::NotADirectory {
+            environment: config.environment.as_ref().unwrap().to_owned(),
+            region: config.region.to_owned(),
+        });
+    }
+
     module_path.push(basename);
     module_path.set_extension("tfvars");
-    module_path
+    Ok(module_path)
 }
 
-fn get_config_with_input(state: &Config, cwd: &PathBuf) -> Config {
+fn get_config_with_input(state: &Config, cwd: &PathBuf) -> anyhow::Result<Config> {
     let theme = ColorfulTheme::default();
-    let mut regions = REGIONS.to_vec();
-    let mut uniq = HashSet::new();
-    regions.sort_unstable();
-    regions.insert(0, &state.region);
-    regions.retain(|v| uniq.insert(*v));
 
-    let environment = Input::<String>::with_theme(&theme)
-        .with_prompt("Environment")
-        .default(state.environment.to_string())
+    let infra_dir = Input::<String>::with_theme(&theme)
+        .with_prompt("Infra Dir")
+        .default(state.infra_dir.to_string())
         .interact_text()
         .expect("Cannot process input");
-    let region = region_input(regions, &theme);
+
+    let infra_path = cwd.join(&infra_dir).canonicalize().unwrap();
+
+    let environment = env_input(&infra_dir, state, &theme)?;
+    let region = region_input(&state, &infra_path, &environment, &theme);
     let module = Input::<String>::with_theme(&theme)
         .with_prompt("Module")
         .with_initial_text(current_dir().map_or(state.module.to_string(), |v| {
@@ -211,22 +278,16 @@ fn get_config_with_input(state: &Config, cwd: &PathBuf) -> Config {
         .interact_text()
         .expect("Cannot process input");
 
-    let infra_dir = Input::<String>::with_theme(&theme)
-        .with_prompt("Infra Dir")
-        .default(state.infra_dir.to_string())
-        .interact_text()
-        .expect("Cannot process input");
 
-    let infra_path = cwd.join(infra_dir).canonicalize().unwrap();
-
-    Config {
-        environment,
+    Ok(Config {
+        environment: Some(environment),
         region,
         module,
         infra_dir: infra_path.to_str().unwrap().to_string(),
-    }
+    })
 }
 
-fn write_state(state_path: &PathBuf, config: &Config) -> () {
-    fs::write(state_path, toml::to_string(config).unwrap()).expect("Could not write state file");
+fn write_state(state_path: &PathBuf, config: &Config) -> anyhow::Result<()> {
+    fs::write(state_path, toml::to_string(config).unwrap())?;
+    Ok(())
 }

@@ -13,3 +13,5 @@ toml = "0.5.9"
 serde = { version = "1.0.147", features = ["derive"] }
 dialoguer = { version = "0.10.2", features = ["fuzzy-select"] }
 console = "0.15.2"
+anyhow = "1.0"
+thiserror = "1.0"
